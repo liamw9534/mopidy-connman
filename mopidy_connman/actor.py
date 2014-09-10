@@ -24,12 +24,21 @@ def api_protect(f):
     ready. 
     """
     def wrapper(*args, **kwargs):
-        self = args[0]
-        if (self.manager):
-            f(*args, **kwargs)
+        if (args[0].manager is not None):
+            return f(*args, **kwargs)
         else:
             raise Exception('Service not ready')
     return wrapper
+
+
+def make_string(str):
+    return dbus.String(str, variant_level=1)
+
+
+def convert_dbus(obj):
+    if (type(obj) is dbus.Byte):
+        return int(obj)
+    return obj
 
 
 class ConnectionManager(pykka.ThreadingActor, service.Service):
@@ -59,20 +68,28 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
         self.manager = None
         self.agent = None
 
-    def _services_changed_handler(self, signal, user_arg, services):
+    def _services_changed_handler(self, signal, user_arg, changed, removed):
         """
         Helper to notify when the available connman connections
         has changed
-        """ 
-        service.ServiceListener.send('connman_connections_changed', service=self.name,
-                                     connections=[{'Name':s.Name, 'Type':s.Type} for s in services])
+        """
+        if (changed):
+            for i in changed:
+                (_, props) = i
+                if 'Name' in props:
+                    ret_props = {}
+                    for i in props.keys():
+                        if (i in self.readonly_properties + self.readwrite_properties):
+                            ret_props[i] = convert_dbus(props[i])
+                    service.ServiceListener.send('connman_connection_changed', service=self.name,
+                                                 connection=props.get('Name'), properties=ret_props)
 
-    def _property_changed_handler(self, signal, user_arg, prop):
+    def _property_changed_handler(self, signal, user_arg, props):
         """
         Helper to notify when a connman property has changed
         """ 
         service.ServiceListener.send('connman_property_changed', service=self.name,
-                                     property=prop)
+                                     properties=props)
 
     def _get_service_by_name(self, name):
         """
@@ -80,7 +97,7 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
         and return its ConnService object
         """
         for (path, params) in self.manager.get_services():
-            if (params.Name == name):
+            if (params.get('Name') == name):
                 return pyconnman.ConnService(path)
 
     def _unregister_wifi_agent(self):
@@ -121,21 +138,20 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
         # Enable the services listed in default configuration -
         # anything listed is powered on.  Otherwise it is
         # powered off.
-        for t in self.manager.get_technologies():
-            tech = pyconnman.ConnTechnology(t)
-            if tech.Name in self.config['powered']:
+        for (path,_) in self.manager.get_technologies():
+            tech = pyconnman.ConnTechnology(path)
+            if (tech.Type in self.config['powered'] and not tech.Powered):
                 tech.Powered = True
-            else:
-                tech.Powered = False
 
         # Try APIPA if it is enable and the connection is idle
         if (self.get_connection_state() == 'idle' and self.config['apipa_enabled']):
-            config = {'Method': 'manual',
-                      'Address': self.config['apipa_ipaddr'],
-                      'Netmask': self.config['apipa_netmask']}
+            config = {'Method': make_string('manual'),
+                      'Address': make_string(self.config['apipa_ipaddr']),
+                      'Netmask': make_string(self.config['apipa_netmask'])}
             s = self._get_service_by_name(self.config['apipa_interface'])
-            s.set_property('IPv4.Configuration', config)
-            s.connect()
+            if (s is not None):
+                s.set_property('IPv4.Configuration', config)
+                s.connect()
 
         # Notify listeners
         self.state = service.ServiceState.SERVICE_STATE_STARTED
@@ -177,7 +193,7 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
         :return: list of network connections
         :rtype: list of 'Name' strings of each connection
         """
-        return [params.Name for (_, params) in self.manager.get_services()]
+        return [params.get('Name') for (_, params) in self.manager.get_services()]
 
     @api_protect
     def scan(self):
@@ -187,8 +203,8 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
         This will result in the SIGNAL_SERVICES_CHANGED signal
         being posted for each different technology scanned
         """
-        for t in self.manager.get_technologies():
-            tech = pyconnman.ConnTechnology(t)
+        for (path,_) in self.manager.get_technologies():
+            tech = pyconnman.ConnTechnology(path)
             if tech.Type in self.config['scannable']:
                 tech.scan()
 
@@ -209,7 +225,7 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
         :param conn: Connection name as returned by :class:`get_connections`
         """
         s = self._get_service_by_name(conn)
-        if (s):
+        if (s is not None):
             s.connect()
 
     @api_protect
@@ -220,7 +236,7 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
         :param conn: Connection name as returned by :class:`get_connections`
         """
         s = self._get_service_by_name(conn)
-        if (s):
+        if (s is not None):
             s.disconnect()
 
     @api_protect
@@ -232,12 +248,12 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
         :return: dictionary of properties
         """
         s = self._get_service_by_name(conn)
-        if (s):
+        if (s is not None):
             ret_props = {}
             props = s.get_property()
             for i in props.keys():
                 if (i in self.readonly_properties + self.readwrite_properties):
-                    ret_props[i] = props[i]
+                    ret_props[i] = convert_dbus(props[i])
             return ret_props
 
     @api_protect
@@ -249,7 +265,7 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
         :param set_props: dictionary of readwrite properties
         """
         s = self._get_service_by_name(conn)
-        if (s):
+        if (s is not None):
             props = s.get_property()
             for i in props.keys():
                 if (i in self.readwrite_properties):
@@ -282,7 +298,7 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
                 set_config[i] = config[i]
         if (conn is not None):
             s = self._get_service_by_name(conn)
-            if (s):
+            if (s is not None):
                 path = s._object.__dbus_object_path__
             else:
                 path = None
