@@ -128,6 +128,15 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
             else:
                 tech.Powered = False
 
+        # Try APIPA if it is enable and the connection is idle
+        if (self.get_connection_state() == 'idle' and self.config['apipa_enabled']):
+            config = {'Method': 'manual',
+                      'Address': self.config['apipa_ipaddr'],
+                      'Netmask': self.config['apipa_netmask']}
+            s = self._get_service_by_name(self.config['apipa_interface'])
+            s.set_property('IPv4.Configuration', config)
+            s.connect()
+
         # Notify listeners
         self.state = service.ServiceState.SERVICE_STATE_STARTED
         service.ServiceListener.send('service_started', service=self.name)
