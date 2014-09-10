@@ -21,6 +21,10 @@ class Extension(ext.Extension):
         schema = super(Extension, self).get_config_schema()
         schema['powered'] = config.List()
         schema['scannable'] = config.List()
+        schema['apipa_enabled'] = config.Boolean()
+        schema['apipa_ipaddr'] = config.String()
+        schema['apipa_netmask'] = config.String()
+        schema['apipa_interface'] = config.String()
         return schema
 
     def validate_environment(self):
