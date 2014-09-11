@@ -84,10 +84,11 @@ class ConnectionManager(pykka.ThreadingActor, service.Service):
                     service.ServiceListener.send('connman_connection_changed', service=self.name,
                                                  connection=props.get('Name'), properties=ret_props)
 
-    def _property_changed_handler(self, signal, user_arg, props):
+    def _property_changed_handler(self, signal, user_arg, prop_name, prop_value):
         """
         Helper to notify when a connman property has changed
-        """ 
+        """
+        props = { prop_name: prop_value } 
         service.ServiceListener.send('connman_property_changed', service=self.name,
                                      properties=props)
 
